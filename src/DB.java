@@ -1,5 +1,6 @@
 import java.sql.*;
-import java.util.*;
+import java.util.ArrayList;
+import java.util.List;
 
 public class DB {
     private static DB instance;
@@ -76,22 +77,35 @@ public class DB {
     // product filter chyyan
 
     public static List<Product> getProducts() throws SQLException {
-        return getProducts("ALL");
+        return getProducts("ALL", "ALL", "ALL");
     }
 
-    public static List<Product> getProducts(String category) throws SQLException {
+    public static List<Product> getProducts(String category, String gender, String size) throws SQLException {
         List<Product> list = new ArrayList<>();
         Connection con = connect();
         Statement stmt = con.createStatement();
 
-        String sql;
-        if (category != null && !category.equals("ALL")) {
-            sql = "SELECT * FROM products WHERE category='" + category.toUpperCase() + "' ORDER BY id DESC";
-        } else {
-            sql = "SELECT * FROM products ORDER BY id DESC";
-        }
+        StringBuilder sql = new StringBuilder("SELECT * FROM products");
+        List<String> conditions = new ArrayList<>();
 
-        ResultSet rs = stmt.executeQuery(sql);
+        if (category != null && !category.equals("ALL"))
+            conditions.add("category='" + category.toUpperCase() + "'");
+        if (gender != null && !gender.equals("ALL"))
+            conditions.add("gender='" + gender.toUpperCase() + "'");
+        if (size != null && !size.equals("ALL"))
+            conditions.add("size='" + size.toUpperCase() + "'");
+
+        if (!conditions.isEmpty()) {
+            sql.append(" WHERE ");
+            for (int i = 0; i < conditions.size(); i++) {
+                if (i > 0)
+                    sql.append(" AND ");
+                sql.append(conditions.get(i));
+            }
+        }
+        sql.append(" ORDER BY id DESC");
+
+        ResultSet rs = stmt.executeQuery(sql.toString());
         while (rs.next()) {
             list.add(new Product(
                     rs.getInt("id"),
@@ -180,7 +194,7 @@ public class DB {
 
     // order place chyyan
 
-    public static int placeOrder(int uid, Map<Integer, Integer> cart, String paymethod)
+    public static int placeOrder(int uid, List<CartItem> cart, String paymethod)
             throws SQLException, InsufficientStockException {
 
         Connection con = connect();
@@ -188,23 +202,20 @@ public class DB {
 
         try {
             double total = 0;
-            Map<Integer, Product> pmap = new HashMap<>();
             Statement stmt = con.createStatement();
 
-            for (Map.Entry<Integer, Integer> entry : cart.entrySet()) {
-                int pid = entry.getKey();
-                int qty = entry.getValue();
+            // validate stock and compute total
+            for (CartItem item : cart) {
+                int pid = item.getProduct().getId();
+                int qty = item.getQuantity();
 
-                ResultSet rs = stmt.executeQuery("SELECT * FROM products WHERE id=" + pid);
+                ResultSet rs = stmt.executeQuery("SELECT stock FROM products WHERE id=" + pid);
                 if (rs.next()) {
-                    Product p = new Product(rs.getInt("id"), rs.getString("name"), rs.getString("category"),
-                            rs.getString("gender"), rs.getString("size"), rs.getDouble("price"), rs.getInt("stock"));
-
-                    if (qty > p.getStock()) {
-                        throw new InsufficientStockException(p.getName(), qty, p.getStock());
+                    int stock = rs.getInt("stock");
+                    if (qty > stock) {
+                        throw new InsufficientStockException(item.getProduct().getName(), qty, stock);
                     }
-                    pmap.put(pid, p);
-                    total += p.getPrice() * qty;
+                    total += item.getProduct().getPrice() * qty;
                 }
                 rs.close();
             }
@@ -217,9 +228,9 @@ public class DB {
             int orderid = keys.getInt(1);
             keys.close();
 
-            for (Map.Entry<Integer, Integer> entry : cart.entrySet()) {
-                Product p = pmap.get(entry.getKey());
-                int qty = entry.getValue();
+            for (CartItem item : cart) {
+                Product p = item.getProduct();
+                int qty = item.getQuantity();
 
                 stmt.executeUpdate(
                         "INSERT INTO order_items (order_id, product_id, product_name, quantity, unit_price) VALUES (" +
@@ -243,6 +254,46 @@ public class DB {
                 throw (SQLException) e;
             throw new SQLException("Order failed: " + e.getMessage());
         }
+    }
+
+    // cart save chyyan (logout time)
+
+    public static void saveCart(int uid, List<CartItem> cart) throws SQLException {
+        Connection con = connect();
+        Statement stmt = con.createStatement();
+        // clear existing saved cart for this user
+        stmt.executeUpdate("DELETE FROM cart_items WHERE user_id=" + uid);
+        for (CartItem item : cart) {
+            stmt.executeUpdate("INSERT INTO cart_items (user_id, product_id, quantity) VALUES (" +
+                    uid + ", " + item.getProduct().getId() + ", " + item.getQuantity() + ")");
+        }
+        stmt.close();
+        con.close();
+    }
+
+    // cart load chyyan (login time)
+
+    public static List<CartItem> loadCart(int uid) throws SQLException {
+        List<CartItem> cart = new ArrayList<>();
+        Connection con = connect();
+        Statement stmt = con.createStatement();
+        ResultSet rs = stmt.executeQuery(
+                "SELECT p.id, p.name, p.category, p.gender, p.size, p.price, p.stock, ci.quantity " +
+                        "FROM cart_items ci " +
+                        "JOIN products p ON ci.product_id = p.id " +
+                        "WHERE ci.user_id=" + uid);
+        while (rs.next()) {
+            Product p = new Product(
+                    rs.getInt("id"), rs.getString("name"), rs.getString("category"),
+                    rs.getString("gender"), rs.getString("size"),
+                    rs.getDouble("price"), rs.getInt("stock"));
+            int qty = rs.getInt("quantity");
+            cart.add(new CartItem(p, qty));
+        }
+        rs.close();
+        stmt.close();
+        con.close();
+        return cart;
     }
 
     // order status update chyyan

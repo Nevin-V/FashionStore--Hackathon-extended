@@ -2,7 +2,7 @@ import javax.swing.*;
 import javax.swing.table.DefaultTableModel;
 import java.awt.*;
 import java.sql.SQLException;
-import java.util.*;
+import java.util.ArrayList;
 import java.util.List;
 
 public class FashionStoreApp {
@@ -10,7 +10,7 @@ public class FashionStoreApp {
 
     private User user;
 
-    private Map<Integer, CartItem> cart = new LinkedHashMap<>();
+    private List<CartItem> cart = new ArrayList<>();
 
     // pmodel-product model
     // cmodel-customer model
@@ -24,6 +24,8 @@ public class FashionStoreApp {
     private JTextField searchtxt;
 
     private JComboBox<String> catfilter;
+    private JComboBox<String> genderfilter;
+    private JComboBox<String> sizefilter;
 
     public static void main(String[] args) {
         SwingUtilities.invokeLater(() -> {
@@ -86,6 +88,11 @@ public class FashionStoreApp {
 
                 user = u;
                 f.dispose();
+                try {
+                    cart = DB.loadCart(user.getId());
+                } catch (SQLException cartEx) {
+                    cart = new ArrayList<>();
+                }
                 showMainDashboard();
 
             } catch (SQLException ex) {
@@ -150,8 +157,16 @@ public class FashionStoreApp {
 
         JButton logoutbtn = new JButton("Logout");
         logoutbtn.addActionListener(e -> {
+            if (!user.isAdmin()) {
+                try {
+                    DB.saveCart(user.getId(), cart);
+                } catch (SQLException ex) {
+                    showError("Could not save cart: " + ex.getMessage());
+                }
+            }
             frame.dispose();
             cart.clear();
+            user = null;
             showLogin();
         });
         toppanel.add(welcomelbl, BorderLayout.WEST);
@@ -195,6 +210,8 @@ public class FashionStoreApp {
         JPanel fbar = new JPanel(new FlowLayout(FlowLayout.LEFT));
         searchtxt = new JTextField(15);
         catfilter = new JComboBox<>(new String[] { "ALL", "TOPWEAR", "BOTTOMWEAR", "DRESSES", "FOOTWEAR" });
+        genderfilter = new JComboBox<>(new String[] { "ALL", "MEN", "WOMEN", "UNISEX" });
+        sizefilter = new JComboBox<>(new String[] { "ALL", "S", "M", "L", "XL" });
         JButton searchbtn = new JButton("Filter");
         JButton resetbtn = new JButton("Reset");
         JButton cartbtn = new JButton("Add Selected to Cart");
@@ -205,6 +222,12 @@ public class FashionStoreApp {
         fbar.add(new JLabel("Category:"));
         fbar.add(catfilter);
 
+        fbar.add(new JLabel("Gender:"));
+        fbar.add(genderfilter);
+
+        fbar.add(new JLabel("Size:"));
+        fbar.add(sizefilter);
+
         fbar.add(searchbtn);
         fbar.add(resetbtn);
 
@@ -214,9 +237,10 @@ public class FashionStoreApp {
 
         searchbtn.addActionListener(e -> refreshCatalogue());
         resetbtn.addActionListener(e -> {
-
             searchtxt.setText("");
             catfilter.setSelectedIndex(0);
+            genderfilter.setSelectedIndex(0);
+            sizefilter.setSelectedIndex(0);
             refreshCatalogue();
         });
         cartbtn.addActionListener(e -> addToCart(table));
@@ -250,7 +274,7 @@ public class FashionStoreApp {
                 return;
             }
             int pid = Integer.parseInt(cmodel.getValueAt(row, 0).toString());
-            cart.remove(pid);
+            cart.removeIf(item -> item.getProduct().getId() == pid);
             refreshCart();
         });
 
@@ -416,7 +440,13 @@ public class FashionStoreApp {
                 return;
             }
 
-            CartItem existing = cart.get(id);
+            CartItem existing = null;
+            for (CartItem item : cart) {
+                if (item.getProduct().getId() == id) {
+                    existing = item;
+                    break;
+                }
+            }
             int totalqty = qty + (existing == null ? 0 : existing.getQuantity());
 
             if (totalqty > product.getStock()) {
@@ -424,7 +454,7 @@ public class FashionStoreApp {
             }
 
             if (existing == null) {
-                cart.put(id, new CartItem(product, qty));
+                cart.add(new CartItem(product, qty));
             } else {
                 existing.setQuantity(totalqty);
             }
@@ -447,7 +477,7 @@ public class FashionStoreApp {
         }
 
         double total = 0;
-        for (CartItem item : cart.values())
+        for (CartItem item : cart)
             total += item.getSubtotal();
 
         Object[] options = { "Cash on Delivery", "Demo Card", "Cancel" };
@@ -464,13 +494,8 @@ public class FashionStoreApp {
             return;
         }
 
-        Map<Integer, Integer> quantities = new LinkedHashMap<>();
-        for (Map.Entry<Integer, CartItem> entry : cart.entrySet()) {
-            quantities.put(entry.getKey(), entry.getValue().getQuantity());
-        }
-
         try {
-            int orderid = DB.placeOrder(user.getId(), quantities, payment.getMethodName());
+            int orderid = DB.placeOrder(user.getId(), cart, payment.getMethodName());
             cart.clear();
             refreshCart();
             refreshCatalogue();
@@ -540,8 +565,10 @@ public class FashionStoreApp {
         try {
             String search = searchtxt.getText().trim().toLowerCase();
             String cat = String.valueOf(catfilter.getSelectedItem());
+            String gender = String.valueOf(genderfilter.getSelectedItem());
+            String size = String.valueOf(sizefilter.getSelectedItem());
 
-            List<Product> list = cat.equals("ALL") ? DB.getProducts() : DB.getProducts(cat);
+            List<Product> list = DB.getProducts(cat, gender, size);
             for (Product p : list) {
                 if (p.getName().toLowerCase().contains(search)) {
                     pmodel.addRow(new Object[] { p.getId(), p.getName(), p.getCategory(), p.getGender(),
@@ -558,7 +585,7 @@ public class FashionStoreApp {
             return;
         cmodel.setRowCount(0);
         double total = 0;
-        for (CartItem item : cart.values()) {
+        for (CartItem item : cart) {
             total += item.getSubtotal();
             cmodel.addRow(new Object[] { item.getProduct().getId(), item.getProduct().getName(),
                     item.getProduct().getSize(), item.getProduct().getPrice(),

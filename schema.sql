@@ -49,6 +49,16 @@ CREATE TABLE IF NOT EXISTS order_items (
     CONSTRAINT fk_items_product FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE SET NULL
 );
 
+CREATE TABLE IF NOT EXISTS cart_items (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    user_id INT NOT NULL,
+    product_id INT NOT NULL,
+    quantity INT NOT NULL DEFAULT 1,
+    CONSTRAINT fk_cart_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    CONSTRAINT fk_cart_product FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE CASCADE,
+    UNIQUE KEY uq_cart_user_product (user_id, product_id)
+);
+
 INSERT IGNORE INTO users(username, password, full_name, role)
 VALUES ('admin', 'admin123', 'Store Administrator', 'ADMIN');
 
