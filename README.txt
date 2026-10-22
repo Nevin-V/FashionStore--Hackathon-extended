@@ -91,6 +91,8 @@ PROJECT STRUCTURE
     DB.java                      JDBC database connection & queries
     FashionStoreApp.java         Swing GUI application (Entry point)
 
+    BNPLPayment.java             Buy Now, Pay Later implementation (emi)
+
   schema.sql                     Database creation & seed data script
   run.bat                        One-click compile & launch script
   mysql-connector-j-8.4.0.jar    Official MySQL JDBC driver

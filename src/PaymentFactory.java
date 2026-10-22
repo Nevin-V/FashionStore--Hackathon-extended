@@ -5,6 +5,8 @@ public class PaymentFactory {
             return new CODPayment();
         } else if (choice == 1) {
             return new CardPayment();
+        } else if (choice == 2) {
+            return new BNPLPayment();
         } else {
             return new CODPayment();
         }

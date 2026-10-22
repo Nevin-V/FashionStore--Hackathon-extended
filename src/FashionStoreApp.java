@@ -296,13 +296,26 @@ public class FashionStoreApp {
         JPanel panel = new JPanel(new BorderLayout(8, 8));
         panel.setBorder(BorderFactory.createEmptyBorder(8, 8, 8, 8));
 
-        ordersmodel = createTableModel("Order ID", "Total (Rs.)", "Status", "Payment Method", "Date Placed");
+        ordersmodel = createTableModel("Order ID", "Total (Rs.)", "Order Status", "Payment Method", "Payment Status", "Date Placed");
         JTable table = new JTable(ordersmodel);
+
+        JButton paybtn = new JButton("Pay Next Instalment");
+        paybtn.addActionListener(e -> {
+            int row = table.getSelectedRow();
+            if (row < 0) {
+                showError("Select an order first.");
+                return;
+            }
+            int orderid = Integer.parseInt(ordersmodel.getValueAt(row, 0).toString());
+            String status = ordersmodel.getValueAt(row, 4).toString();
+            payNextInstalment(orderid, status);
+        });
 
         JButton refreshbtn = new JButton("Refresh Orders");
         refreshbtn.addActionListener(e -> refreshCustomerOrders());
 
         JPanel bbar = new JPanel(new FlowLayout(FlowLayout.RIGHT));
+        bbar.add(paybtn);
         bbar.add(refreshbtn);
 
         panel.add(new JScrollPane(table), BorderLayout.CENTER);
@@ -374,12 +387,17 @@ public class FashionStoreApp {
         JPanel panel = new JPanel(new BorderLayout(8, 8));
         panel.setBorder(BorderFactory.createEmptyBorder(8, 8, 8, 8));
 
-        aomodel = createTableModel("Order ID", "Customer", "Total", "Status", "Payment", "Date");
+        aomodel = createTableModel("Order ID", "Customer", "Total", "Order Status", "Payment Method", "Payment Status", "Date");
         JTable table = new JTable(aomodel);
 
         JComboBox<String> scombo = new JComboBox<>(
                 new String[] { "PLACED", "PROCESSING", "SHIPPED", "DELIVERED", "CANCELLED" });
         JButton updatebtn = new JButton("Update Status");
+
+        JComboBox<String> pcombo = new JComboBox<>(
+                new String[] { "PAID", "PENDING", "PENDING (COD)", "PARTIALLY PAID", "CANCELLED" });
+        JButton updatepaybtn = new JButton("Update Payment");
+
         JButton refreshbtn = new JButton("Refresh");
 
         updatebtn.addActionListener(e -> {
@@ -398,12 +416,33 @@ public class FashionStoreApp {
                 showError("Update failed: " + ex.getMessage());
             }
         });
+
+        updatepaybtn.addActionListener(e -> {
+            int row = table.getSelectedRow();
+            if (row < 0) {
+                showError("Select an order to update payment status.");
+                return;
+            }
+            int orderid = Integer.parseInt(aomodel.getValueAt(row, 0).toString());
+            String newPayStatus = String.valueOf(pcombo.getSelectedItem());
+            try {
+                DB.updatePaymentStatus(orderid, newPayStatus);
+                refreshAdminOrders();
+                JOptionPane.showMessageDialog(frame, "Order #" + orderid + " payment status updated to " + newPayStatus);
+            } catch (SQLException ex) {
+                showError("Payment status update failed: " + ex.getMessage());
+            }
+        });
+
         refreshbtn.addActionListener(e -> refreshAdminOrders());
 
         JPanel bbar = new JPanel(new FlowLayout(FlowLayout.RIGHT));
         bbar.add(new JLabel("Set Status:"));
         bbar.add(scombo);
         bbar.add(updatebtn);
+        bbar.add(new JLabel("Set Payment:"));
+        bbar.add(pcombo);
+        bbar.add(updatepaybtn);
         bbar.add(refreshbtn);
 
         panel.add(new JScrollPane(table), BorderLayout.CENTER);
@@ -480,12 +519,12 @@ public class FashionStoreApp {
         for (CartItem item : cart)
             total += item.getSubtotal();
 
-        Object[] options = { "Cash on Delivery", "Demo Card", "Cancel" };
+        Object[] options = { "Cash on Delivery", "Demo Card", "Buy Now, Pay Later (EMI)", "Cancel" };
         int choice = JOptionPane.showOptionDialog(frame,
-                "Total Amount: Rs. " + total + "\nSelect Payment Method:",
+                "Total Amount: Rs. " + String.format("%.2f", total) + "\nSelect Payment Method:",
                 "Checkout", JOptionPane.DEFAULT_OPTION, JOptionPane.QUESTION_MESSAGE, null, options, options[0]);
 
-        if (choice < 0 || choice == 2)
+        if (choice < 0 || choice == 3)
             return;
 
         Payment payment = PaymentFactory.createPayment(choice);
@@ -495,15 +534,28 @@ public class FashionStoreApp {
         }
 
         try {
-            int orderid = DB.placeOrder(user.getId(), cart, payment.getMethodName());
+            int orderid = DB.placeOrder(user.getId(), cart, payment);
             cart.clear();
             refreshCart();
             refreshCatalogue();
             refreshCustomerOrders();
 
-            JOptionPane.showMessageDialog(frame, "Order #" + orderid + " Placed!\n\n" +
-                    "Amount: Rs. " + total + "\n" +
-                    "Payment: " + payment.getMethodName());
+            StringBuilder msg = new StringBuilder();
+            msg.append("Order #").append(orderid).append(" Placed Successfully!\n\n");
+            msg.append("Amount: Rs. ").append(String.format("%.2f", total)).append("\n");
+            msg.append("Payment Method: ").append(payment.getMethodName()).append("\n");
+
+            if (payment instanceof BNPLPayment) {
+                BNPLPayment bnpl = (BNPLPayment) payment;
+                msg.append("Payment Status: ").append(bnpl.getInitialPaymentStatus()).append("\n");
+                if (bnpl.getTenure() > 1) {
+                    msg.append("Monthly Instalment: Rs. ").append(String.format("%.2f", bnpl.getInstallment()))
+                            .append(" (").append(bnpl.getTenure()).append(" Months)\n");
+                }
+                msg.append("\nYou can pay instalments in the 'My Orders' tab.");
+            }
+
+            JOptionPane.showMessageDialog(frame, msg.toString(), "Order Confirmed", JOptionPane.INFORMATION_MESSAGE);
         } catch (InsufficientStockException ex) {
             showError(ex.getMessage());
             refreshCatalogue();
@@ -601,7 +653,7 @@ public class FashionStoreApp {
         try {
             for (OrderRecord o : DB.getOrders(user.getId())) {
                 ordersmodel.addRow(new Object[] { o.getId(), o.getTotal(), o.getStatus(), o.getPaymentMethod(),
-                        o.getCreatedAt() });
+                        o.getPaymentStatus(), o.getCreatedAt() });
             }
         } catch (SQLException ex) {
             showError(ex.getMessage());
@@ -629,10 +681,39 @@ public class FashionStoreApp {
         try {
             for (OrderRecord o : DB.getOrders(null)) {
                 aomodel.addRow(new Object[] { o.getId(), o.getCustomer(), o.getTotal(), o.getStatus(),
-                        o.getPaymentMethod(), o.getCreatedAt() });
+                        o.getPaymentMethod(), o.getPaymentStatus(), o.getCreatedAt() });
             }
         } catch (SQLException ex) {
             showError(ex.getMessage());
+        }
+    }
+
+    private void payNextInstalment(int orderId, String currentStatus) {
+        if ("PAID".equalsIgnoreCase(currentStatus)) {
+            JOptionPane.showMessageDialog(frame, "Order #" + orderId + " is already paid in full!");
+            return;
+        }
+
+        int choice = JOptionPane.showConfirmDialog(frame,
+                "Order #" + orderId + "\nCurrent Payment Status: " + currentStatus + "\n\nPay next instalment now?",
+                "Pay Instalment", JOptionPane.YES_NO_OPTION);
+
+        if (choice == JOptionPane.YES_OPTION) {
+            String newStatus = "PAID";
+            if (currentStatus.contains("0/3")) newStatus = "PARTIALLY PAID (1/3)";
+            else if (currentStatus.contains("1/3")) newStatus = "PARTIALLY PAID (2/3)";
+            else if (currentStatus.contains("2/3")) newStatus = "PAID";
+            else if (currentStatus.contains("0/6")) newStatus = "PARTIALLY PAID (1/6)";
+            else if (currentStatus.contains("1/6")) newStatus = "PARTIALLY PAID (2/6)";
+            else newStatus = "PAID";
+
+            try {
+                DB.updatePaymentStatus(orderId, newStatus);
+                refreshCustomerOrders();
+                JOptionPane.showMessageDialog(frame, "Payment recorded! Status: " + newStatus);
+            } catch (SQLException ex) {
+                showError("Payment error: " + ex.getMessage());
+            }
         }
     }
 

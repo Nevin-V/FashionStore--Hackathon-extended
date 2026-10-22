@@ -21,7 +21,12 @@ public class DB {
     }
 
     public static Connection connect() throws SQLException {
-        return DriverManager.getConnection(URL, USER, PASSWORD);
+        Connection con = DriverManager.getConnection(URL, USER, PASSWORD);
+        try (Statement s = con.createStatement()) {
+            s.executeUpdate("ALTER TABLE orders ADD COLUMN IF NOT EXISTS payment_status VARCHAR(50) DEFAULT 'PAID'");
+        } catch (Exception ignored) {
+        }
+        return con;
     }
 
     // login chyyan
@@ -166,6 +171,7 @@ public class DB {
         Statement stmt = con.createStatement();
 
         String sql = "SELECT o.id, u.username, o.total, o.status, o.payment_method, " +
+                "COALESCE(o.payment_status, 'PAID') AS payment_status, " +
                 "DATE_FORMAT(o.created_at, '%Y-%m-%d %H:%i') AS created_at " +
                 "FROM orders o JOIN users u ON o.user_id = u.id ";
 
@@ -183,6 +189,7 @@ public class DB {
                     rs.getDouble("total"),
                     rs.getString("status"),
                     rs.getString("payment_method"),
+                    rs.getString("payment_status"),
                     rs.getString("created_at")));
         }
 
@@ -194,7 +201,25 @@ public class DB {
 
     // order place chyyan
 
+    public static int placeOrder(int uid, List<CartItem> cart, Payment payment)
+            throws SQLException, InsufficientStockException {
+        String method = payment.getMethodName();
+        String payStatus = "PAID";
+        if (payment instanceof BNPLPayment) {
+            payStatus = ((BNPLPayment) payment).getInitialPaymentStatus();
+        } else if (method.toUpperCase().contains("CASH")) {
+            payStatus = "PENDING (COD)";
+        }
+        return placeOrder(uid, cart, method, payStatus);
+    }
+
     public static int placeOrder(int uid, List<CartItem> cart, String paymethod)
+            throws SQLException, InsufficientStockException {
+        String payStatus = (paymethod != null && paymethod.toUpperCase().contains("CASH")) ? "PENDING (COD)" : "PAID";
+        return placeOrder(uid, cart, paymethod, payStatus);
+    }
+
+    public static int placeOrder(int uid, List<CartItem> cart, String paymethod, String payStatus)
             throws SQLException, InsufficientStockException {
 
         Connection con = connect();
@@ -220,22 +245,34 @@ public class DB {
                 rs.close();
             }
 
-            stmt.executeUpdate("INSERT INTO orders (user_id, total, status, payment_method) VALUES (" +
-                    uid + ", " + total + ", 'PLACED', '" + paymethod + "')",
+            PreparedStatement psOrder = con.prepareStatement(
+                    "INSERT INTO orders (user_id, total, status, payment_method, payment_status) VALUES (?, ?, 'PLACED', ?, ?)",
                     Statement.RETURN_GENERATED_KEYS);
-            ResultSet keys = stmt.getGeneratedKeys();
+            psOrder.setInt(1, uid);
+            psOrder.setDouble(2, total);
+            psOrder.setString(3, paymethod);
+            psOrder.setString(4, payStatus);
+            psOrder.executeUpdate();
+
+            ResultSet keys = psOrder.getGeneratedKeys();
             keys.next();
             int orderid = keys.getInt(1);
             keys.close();
+            psOrder.close();
 
             for (CartItem item : cart) {
                 Product p = item.getProduct();
                 int qty = item.getQuantity();
 
-                stmt.executeUpdate(
-                        "INSERT INTO order_items (order_id, product_id, product_name, quantity, unit_price) VALUES (" +
-                                orderid + ", " + p.getId() + ", '" + p.getName() + "', " + qty + ", " + p.getPrice()
-                                + ")");
+                PreparedStatement psItem = con.prepareStatement(
+                        "INSERT INTO order_items (order_id, product_id, product_name, quantity, unit_price) VALUES (?, ?, ?, ?, ?)");
+                psItem.setInt(1, orderid);
+                psItem.setInt(2, p.getId());
+                psItem.setString(3, p.getName());
+                psItem.setInt(4, qty);
+                psItem.setDouble(5, p.getPrice());
+                psItem.executeUpdate();
+                psItem.close();
 
                 stmt.executeUpdate("UPDATE products SET stock = stock - " + qty + " WHERE id = " + p.getId());
             }
@@ -302,6 +339,16 @@ public class DB {
         Connection con = connect();
         Statement stmt = con.createStatement();
         stmt.executeUpdate("UPDATE orders SET status='" + status + "' WHERE id=" + orderid);
+        stmt.close();
+        con.close();
+    }
+
+    // payment status update chyyan
+
+    public static void updatePaymentStatus(int orderid, String status) throws SQLException {
+        Connection con = connect();
+        Statement stmt = con.createStatement();
+        stmt.executeUpdate("UPDATE orders SET payment_status='" + status.replace("'", "''") + "' WHERE id=" + orderid);
         stmt.close();
         con.close();
     }
